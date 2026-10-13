@@ -17,8 +17,8 @@ qodercli login
 ## 安装与启动
 
 ```bash
-npm install
-npm start
+pnpm install
+pnpm start
 ```
 
 默认监听 `http://127.0.0.1:8787`，可通过环境变量配置：

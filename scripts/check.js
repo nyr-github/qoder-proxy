@@ -1,4 +1,4 @@
-// npm run check: verify qodercli exists and is logged in.
+// pnpm run check: verify qodercli exists and is logged in.
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -54,7 +54,7 @@ function parseLoggedIn(result) {
 }
 
 async function main() {
-    console.log(`qoder-proxy check\n`);
+    console.log(`qoder-proxy check (pnpm run check)\n`);
 
     const binary = await findBinary();
     if (!binary) {
@@ -80,7 +80,7 @@ async function main() {
     console.log(`[2/2] logged in`);
     if (status.data) console.log(`      ${JSON.stringify(status.data)}`);
 
-    console.log(`\nOK. Start the proxy with: npm start`);
+    console.log(`\nOK. Start the proxy with: pnpm start`);
 }
 
 main();
