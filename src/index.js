@@ -3,14 +3,49 @@ const { port, host, cliPath } = require('./config');
 const cli = require('./cli');
 
 const app = express();
+
+// CORS: allow browser extensions / web pages to call this local service.
+// Reflect the request Origin (or *) so both simple and credentialed calls work,
+// and answer preflight (OPTIONS) requests which the browser sends for the
+// JSON POST /v1/chat/completions with custom headers.
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '*';
+  res.setHeader('Access-Control-Allow-Origin', origin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '10mb' }));
+
+// The CLI subprocess transport (/v0) is deprecated for performance (per-request
+// process spawn) and hidden by default; opt back in with QODER_ENABLE_CLI=1.
+const CLI_ENABLED = process.env.QODER_ENABLE_CLI === '1';
+if (CLI_ENABLED) {
+  registerV0Routes();
+} else {
+  app.use('/v0', (_req, res) => {
+    res.status(404).json({
+      error: {
+        message: 'CLI transport /v0 is disabled (slow subprocess path). Use /v1 instead; set QODER_ENABLE_CLI=1 to re-enable.',
+        type: 'transport_disabled',
+      },
+    });
+  });
+}
+
+function registerV0Routes() {
 
 function completionId() {
   return `chatcmpl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-// GET /v1/models
-app.get('/v1/models', async (_req, res) => {
+// GET /v0/models (CLI transport)
+app.get('/v0/models', async (_req, res) => {
   try {
     const models = await cli.listModels();
     res.json({
@@ -28,8 +63,8 @@ app.get('/v1/models', async (_req, res) => {
   }
 });
 
-// POST /v1/chat/completions
-app.post('/v1/chat/completions', async (req, res) => {
+// POST /v0/chat/completions (CLI transport)
+app.post('/v0/chat/completions', async (req, res) => {
   const { model, messages, stream } = req.body;
 
   if (!model || !Array.isArray(messages) || messages.length === 0) {
@@ -94,8 +129,8 @@ app.post('/v1/chat/completions', async (req, res) => {
   }
 });
 
-// GET /v1/quota
-app.get('/v1/quota', async (_req, res) => {
+// GET /v0/quota
+app.get('/v0/quota', async (_req, res) => {
   try {
     const status = await cli.getStatus();
     res.json(status);
@@ -104,12 +139,24 @@ app.get('/v1/quota', async (_req, res) => {
   }
 });
 
-app.get('/health', (_req, res) => res.json({ status: 'ok', cli: cliPath }));
+}
+
+// GET /health
+app.get('/health', (_req, res) => res.json({ status: 'ok', primary: '/v1 (direct http)', cli: CLI_ENABLED ? cliPath : 'disabled' }));
+
+// GET / — built-in demo chat console (single self-contained page, no CDN).
+app.use('/', require('./playground').router);
+
+// /v1: direct-HTTP transport with its own device-flow OAuth (no qodercli).
+// /v2 stays as a compatibility alias of the same router.
+app.use(['/v1', '/v2'], require('./api'));
 
 app.listen(port, host, () => {
   console.log(`qoder-proxy listening on http://${host}:${port}`);
-  console.log(`  CLI: ${cliPath}`);
-  console.log(`  GET  /v1/models`);
+  console.log(`  GET  /                      demo chat console (open in a browser)`);
+  console.log(`  GET  /v1/models            (model id = Name-product@alias, e.g. Qwen3.8-Flash-qoder@a1)`);
   console.log(`  POST /v1/chat/completions`);
-  console.log(`  GET  /v1/quota`);
+  console.log(`  GET  /v1/accounts           GET /v1/auth/status`);
+  console.log(`  authorize with \`pnpm run login\` (add --product qodercn for the China version)`);
+  console.log(`  (/v2 = alias of /v1; /v0 CLI transport ${CLI_ENABLED ? `enabled, CLI: ${cliPath}` : 'hidden — QODER_ENABLE_CLI=1 to re-enable'})`);
 });

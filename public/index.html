@@ -1,0 +1,2345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark light">
+    <title>qoder-proxy 控制台</title>
+    <!--
+  本服务自带的演示控制台页面，零依赖：不引任何 CDN、不引框架、只用相对路径请求
+  本进程的 /v1 接口。左侧导航四个独立页面（#/chat 聊天演示、#/accounts 账号和模型、
+  #/docs 接入文档、#/deploy 部署文档），hash 路由切换。想改样式或加功能，直接编辑
+  本文件即可（服务按 mtime 重新读取，刷新页面生效，不用重启）。
+-->
+    <style>
+        /* 设计系统：单一绿 accent + 中性 zinc 底，圆角/阴影/动效统一走下面这套 token。
+     只改外观，不动 JS 依赖的任何 id / class（.msg .who .body .meta .chip .typing 等）。 */
+        :root {
+            --bg: #0d0f13;
+            --panel: #15181e;
+            --panel-2: #1b212a;
+            --line: #272e39;
+            --fg: #e7eaf0;
+            --muted: #8a94a6;
+            --accent: #3fd68f;
+            --accent-hi: #59e3a2;
+            --accent-ink: #05230f;
+            --user: #223349;
+            --err: #ff6b6b;
+            --code: #0a0c0f;
+            /* 圆角尺度：交互件 8 / 面 14 / 代码块 10 / 标签全圆（pill）——全页只用这一套 */
+            --r-ctl: 8px;
+            --r-surf: 14px;
+            --r-code: 10px;
+            --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -12px rgba(0, 0, 0, .5);
+            --ease: cubic-bezier(.16, 1, .3, 1);
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #f5f6f8;
+                --panel: #fff;
+                --panel-2: #eef1f5;
+                --line: #e1e5ec;
+                --fg: #171a20;
+                --muted: #5f6a7c;
+                --accent: #12a150;
+                --accent-hi: #0f8f45;
+                --accent-ink: #fff;
+                --user: #e6eef8;
+                --err: #cf2f2f;
+                --code: #f1f3f6;
+                --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 12px 28px -14px rgba(16, 24, 40, .18);
+            }
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        /* 整个控制台封顶 1080px 并在窗口里居中，宽屏下两侧留出 --bg 底色（body 背景会传到 canvas） */
+        html,
+        body {
+            margin: 0 auto;
+            height: 100%;
+            max-width: 1280px;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--fg);
+            font: 15px/1.65 ui-sans-serif, system-ui, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            -webkit-font-smoothing: antialiased;
+            text-rendering: optimizeLegibility;
+            display: flex;
+            height: 100dvh;
+        }
+
+        /* ---------- 左侧导航 ---------- */
+        .sidebar {
+            width: 232px;
+            flex: none;
+            display: flex;
+            flex-direction: column;
+            background: var(--panel);
+            border-right: 1px solid var(--line);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 16px 18px 14px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .brand b {
+            font-size: 15px;
+            font-weight: 650;
+            letter-spacing: .2px;
+        }
+
+        .brand b span {
+            color: var(--accent);
+        }
+
+        .nav {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 12px 10px;
+        }
+
+        .nav a {
+            position: relative;
+            display: flex;
+            align-items: center;
+            height: 38px;
+            padding: 0 12px 0 15px;
+            border-radius: var(--r-ctl);
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 14px;
+            transition: color .16s var(--ease), background .16s var(--ease);
+        }
+
+        .nav a:hover {
+            color: var(--fg);
+            background: var(--panel-2);
+        }
+
+        .nav a.active {
+            color: var(--fg);
+            background: var(--panel-2);
+            font-weight: 600;
+        }
+
+        .nav a.active::before {
+            content: '';
+            position: absolute;
+            left: 4px;
+            top: 10px;
+            bottom: 10px;
+            width: 3px;
+            border-radius: 2px;
+            background: var(--accent);
+        }
+
+        .side-foot {
+            margin-top: auto;
+            padding: 12px 18px;
+            border-top: 1px solid var(--line);
+            font-size: 11.5px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* ---------- 页面骨架：每个 #page 是独立 page，切换即显隐 ---------- */
+        .shell {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .page {
+            display: none;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+        }
+
+        .page.active {
+            display: flex;
+        }
+
+        .page-head {
+            flex: none;
+            border-bottom: 1px solid var(--line);
+            background: var(--panel);
+            padding: 10px 24px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+            min-height: 56px;
+        }
+
+        /* 页头内容封顶 1080px 居中，标题左缘与内容列对齐；窄屏下 padding 自然收紧 */
+        .page-head {
+            padding-left: max(24px, calc((100% - 1080px) / 2));
+            padding-right: max(24px, calc((100% - 1080px) / 2));
+        }
+
+        .page-head h1 {
+            font-size: 15px;
+            font-weight: 650;
+            margin: 0;
+            letter-spacing: .2px;
+            display: flex;
+            align-items: baseline;
+            gap: 2px;
+        }
+
+        .page-head h1 span {
+            color: var(--accent);
+        }
+
+        .chips {
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .chip {
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 3px 10px;
+            background: var(--panel-2);
+            line-height: 1.4;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .chip.ok {
+            color: var(--accent);
+            border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+            background: color-mix(in srgb, var(--accent) 10%, var(--panel-2));
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+            flex: none;
+            animation: breathe 2.8s var(--ease) infinite;
+        }
+
+        @keyframes breathe {
+            50% {
+                opacity: .45;
+            }
+        }
+
+        main {
+            flex: 1;
+            overflow-y: auto;
+            padding: 22px 24px 28px;
+            scrollbar-width: thin;
+        }
+
+        main::-webkit-scrollbar {
+            width: 10px;
+        }
+
+        main::-webkit-scrollbar-thumb {
+            background: var(--line);
+            border-radius: 999px;
+            border: 3px solid var(--bg);
+        }
+
+        /* 整页内容封顶 1080px 居中，不随宽屏无限撑开；阅读行长由 .msg 与 .doc 各自用 ch 控制 */
+        .col {
+            width: 100%;
+
+            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        /* ---------- 表单与按钮 ---------- */
+        .grow {
+            flex: 1;
+            min-width: 220px;
+        }
+
+        label {
+            font-size: 12px;
+            font-weight: 550;
+            color: var(--muted);
+            display: block;
+            margin-bottom: 5px;
+            letter-spacing: .1px;
+        }
+
+        input,
+        select,
+        textarea,
+        button {
+            font: inherit;
+            color: inherit;
+        }
+
+        input,
+        textarea,
+        select {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--r-ctl);
+            padding: 9px 11px;
+            outline: none;
+            width: 100%;
+            transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+        }
+
+        /* 页内小按钮不该吃上面这条 width:100% */
+        button {
+            width: auto;
+        }
+
+        input:focus,
+        textarea:focus,
+        select:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+        }
+
+        /* 模型选择只留一个，且放在聊天框正上方：下拉直接列出「每个账号 × 每个模型」，不再另外做一级“常用模型”去重。 */
+        .pick-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin: 0 auto 8px;
+        }
+
+        .pick-row>label {
+            margin: 0;
+            white-space: nowrap;
+        }
+
+        .pick-row .toggle {
+            margin-left: auto;
+            align-self: auto;
+            height: 34px;
+            white-space: nowrap;
+        }
+
+        #model {
+            flex: 1 1 260px;
+            width: auto;
+            max-width: 380px;
+            height: 34px;
+            padding: 5px 10px;
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 13px;
+        }
+
+        .acct-btns button {
+            height: 38px;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            font-size: 13px;
+            align-self: end;
+        }
+
+        .toggle input {
+            width: auto;
+            accent-color: var(--accent);
+        }
+
+        /* ---------- 聊天消息 ---------- */
+        #log {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        /* 宽屏铺满整列；行长封顶约 80ch，两端对齐靠 margin auto */
+        .msg {
+            border: 1px solid var(--line);
+            border-radius: var(--r-surf);
+            padding: 12px 16px;
+            background: var(--panel);
+            box-shadow: var(--shadow);
+            width: 100%;
+            max-width: min(80ch + 34px, 100%);
+            animation: rise .22s var(--ease) both;
+        }
+
+        @keyframes rise {
+            from {
+                opacity: 0;
+                transform: translateY(6px);
+            }
+        }
+
+        /* 聊天式对齐：模型在左、我在右、错误居中——只靠 margin，不动 .msg 自己的布局 */
+        .msg.user {
+            background: var(--user);
+            box-shadow: none;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
+        }
+
+        .msg.assistant {
+            align-self: flex-start;
+            border-left: 2px solid color-mix(in srgb, var(--accent) 60%, var(--line));
+            border-bottom-left-radius: 4px;
+        }
+
+        .msg.err {
+            align-self: center;
+            border-color: var(--err);
+            max-width: min(80ch + 34px, 100%);
+        }
+
+        .msg.err .body {
+            color: var(--err);
+        }
+
+        .who {
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 6px;
+            display: flex;
+            gap: 9px;
+            align-items: center;
+        }
+
+        .who b {
+            color: var(--fg);
+            font-weight: 600;
+        }
+
+        .av {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            flex: none;
+            display: grid;
+            place-items: center;
+            font-size: 10.5px;
+            font-weight: 700;
+            letter-spacing: 0;
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            color: var(--muted);
+        }
+
+        .msg.assistant .av {
+            background: color-mix(in srgb, var(--accent) 16%, var(--panel-2));
+            border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+            color: var(--accent);
+        }
+
+        .msg.user .av {
+            background: color-mix(in srgb, var(--fg) 8%, var(--panel-2));
+            color: var(--fg);
+        }
+
+        .body {
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+
+        .body pre {
+            background: var(--code);
+            border: 1px solid var(--line);
+            border-radius: var(--r-code);
+            padding: 12px;
+            overflow-x: auto;
+            white-space: pre;
+            margin: 10px 0;
+        }
+
+        /* 代码块工具条：真 pre + 悬浮复制，而不是把假截图写进正文 */
+        .codebox {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .codebox>pre {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .codebox .code-lang {
+            font: 600 10.5px/1 ui-monospace, "SF Mono", Consolas, monospace;
+            letter-spacing: .12em;
+            text-transform: lowercase;
+            color: var(--muted);
+            align-self: flex-start;
+            margin: 0 0 4px 2px;
+        }
+
+        .codebox button {
+            position: absolute;
+            top: 26px;
+            right: 10px;
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            border-radius: var(--r-ctl);
+            color: var(--muted);
+            font-size: 11.5px;
+            padding: 3px 9px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+        }
+
+        .codebox:hover button,
+        .codebox button:focus-visible {
+            opacity: 1;
+        }
+
+        .codebox button:hover {
+            color: var(--fg);
+            border-color: var(--accent);
+        }
+
+        .body code,
+        .body pre code {
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 13px;
+        }
+
+        .body code {
+            background: var(--code);
+            border-radius: 5px;
+            padding: 1px 6px;
+        }
+
+        /* 行内代码的底色与左右 padding 不能落到代码块里：那层 padding 会把 pre 的首行
+           顶出来 6px，看着像正文自己缩进了，同时还会在代码块里套一个圆角小盒子。 */
+        .body pre code,
+        .doc pre code {
+            background: none;
+            padding: 0;
+            border-radius: 0;
+        }
+
+        .meta {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 8px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .who button,
+        .meta button,
+        .msg button.link {
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            border-radius: var(--r-ctl);
+            padding: 2px 10px;
+            font-size: 12px;
+            color: var(--muted);
+            cursor: pointer;
+            transition: color .16s var(--ease), border-color .16s var(--ease), transform .1s var(--ease);
+        }
+
+        .who button {
+            margin-left: auto;
+        }
+
+        .who button:hover,
+        .meta button:hover,
+        .msg button.link:hover {
+            color: var(--fg);
+            border-color: var(--accent);
+        }
+
+        .who button:active,
+        .meta button:active,
+        .msg button.link:active {
+            transform: translateY(1px);
+        }
+
+        .typing::after {
+            content: '\25CF';
+            color: var(--accent);
+            margin-left: 3px;
+            font-size: .7em;
+            vertical-align: middle;
+            animation: blink 1.1s steps(2, jump-none) infinite;
+        }
+
+        @keyframes blink {
+            to {
+                opacity: .25;
+            }
+        }
+
+        /* ---------- 发送区（只在聊天页显示） ---------- */
+        footer {
+            flex: none;
+            border-top: 1px solid var(--line);
+            background: var(--panel);
+            padding: 12px 24px 14px;
+        }
+
+        /* 发送条与聊天列同封顶同居中，输入框拉伸占满列宽 */
+        .send {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+
+            margin: 0 auto;
+        }
+
+        #prompt {
+            flex: 1;
+            min-width: 0;
+            resize: none;
+            min-height: 46px;
+            max-height: 200px;
+        }
+
+        button.primary {
+            background: var(--accent);
+            color: var(--accent-ink);
+            border: 0;
+            border-radius: var(--r-ctl);
+            padding: 0 20px;
+            height: 46px;
+            cursor: pointer;
+            font-weight: 650;
+            flex: none;
+            letter-spacing: .2px;
+            transition: background .16s var(--ease), transform .1s var(--ease), box-shadow .16s var(--ease);
+        }
+
+        button.primary:hover:not([disabled]) {
+            background: var(--accent-hi);
+            box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+        }
+
+        button.primary:active:not([disabled]) {
+            transform: translateY(1px);
+        }
+
+        button.primary[disabled] {
+            opacity: .45;
+            cursor: not-allowed;
+        }
+
+        button.ghost {
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            border-radius: var(--r-ctl);
+            padding: 0 14px;
+            height: 46px;
+            cursor: pointer;
+            flex: none;
+            transition: color .16s var(--ease), border-color .16s var(--ease), transform .1s var(--ease);
+        }
+
+        button.ghost:hover {
+            color: var(--fg);
+            border-color: var(--accent);
+        }
+
+        button.ghost:active {
+            transform: translateY(1px);
+        }
+
+        /* 页头、工具条里的次级按钮不该和发送按钮一样高 */
+        button.ghost.small {
+            height: 30px;
+            padding: 0 11px;
+            font-size: 12.5px;
+        }
+
+        button.ghost[disabled] {
+            opacity: .45;
+            cursor: not-allowed;
+        }
+
+        button.ghost[disabled]:hover {
+            border-color: var(--line);
+        }
+
+        :is(button, input, select, textarea, a):focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: var(--muted);
+            text-align: center;
+            margin: 8px auto 0;
+
+        }
+
+        .hint code,
+        .banner code {
+            background: var(--code);
+            padding: 1px 6px;
+            border-radius: 5px;
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 12px;
+        }
+
+        .empty {
+            color: var(--muted);
+            text-align: center;
+            padding: 56px 12px;
+            font-size: 14px;
+        }
+
+        .empty .big {
+            font-size: 15.5px;
+            font-weight: 600;
+            color: var(--fg);
+            margin-bottom: 6px;
+        }
+
+        .suggests {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-top: 18px;
+        }
+
+        .suggests button {
+            border: 1px solid var(--line);
+            background: var(--panel);
+            color: var(--muted);
+            border-radius: 999px;
+            padding: 7px 13px;
+            font-size: 12.5px;
+            cursor: pointer;
+            transition: color .16s var(--ease), border-color .16s var(--ease), transform .1s var(--ease);
+        }
+
+        .suggests button:hover {
+            color: var(--fg);
+            border-color: var(--accent);
+        }
+
+        .suggests button:active {
+            transform: translateY(1px);
+        }
+
+        .banner {
+            border: 1px solid var(--err);
+            color: var(--err);
+            background: color-mix(in srgb, var(--err) 8%, var(--panel));
+            border-radius: var(--r-surf);
+            padding: 12px 15px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        /* ---------- 文档页（接入 / 部署）正文 ---------- */
+        /* 文档列同样封顶 1080px 居中；段落行长封顶约 72ch */
+        .doc {
+            width: 100%;
+
+            margin: 0 auto;
+        }
+
+        .doc h2,
+        .doc .lede,
+        .doc p {
+            max-width: 72ch;
+        }
+
+        .doc h2 {
+            font-size: 20px;
+            font-weight: 650;
+            margin: 4px 0 8px;
+        }
+
+        .doc h2 span {
+            color: var(--accent);
+        }
+
+        .doc .lede {
+            font-size: 14px;
+            color: var(--muted);
+            margin: 0 0 10px;
+            max-width: 65ch;
+        }
+
+        .doc h3 {
+            font-size: 14.5px;
+            margin: 28px 0 8px;
+        }
+
+        .doc p {
+            font-size: 13.5px;
+            color: var(--muted);
+            margin: 6px 0;
+        }
+
+        .doc strong,
+        .doc b {
+            color: var(--fg);
+            font-weight: 600;
+        }
+
+        .doc code {
+            background: var(--code);
+            border-radius: 5px;
+            padding: 1px 6px;
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 12.5px;
+        }
+
+        /* 代码块里预留给动态 Base URL 的占位（运行时用 JS 填）：不高亮斜体，取 accent */
+        .doc pre code i {
+            font-style: normal;
+            color: var(--accent);
+        }
+
+        .doc .codebox {
+            margin: 8px 0 2px;
+        }
+
+        .doc .codebox>pre {
+            background: var(--code);
+            border: 1px solid var(--line);
+            border-radius: var(--r-code);
+            padding: 12px;
+            overflow-x: auto;
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 12.5px;
+            line-height: 1.6;
+            white-space: pre;
+            margin: 0;
+        }
+
+        .doc .codebox button {
+            top: 30px;
+            right: 8px;
+        }
+
+        .doc .url-line {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-top: 8px;
+        }
+
+        .doc .url-line code {
+            flex: 1;
+            padding: 8px 10px;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: nowrap;
+        }
+
+        .doc table {
+            border-collapse: collapse;
+            width: 100%;
+            max-width: 1100px;
+            margin-top: 10px;
+            font-size: 12.5px;
+        }
+
+        .doc th,
+        .doc td {
+            border: 1px solid var(--line);
+            padding: 7px 10px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .doc th {
+            color: var(--fg);
+            font-weight: 600;
+            background: var(--panel-2);
+            white-space: nowrap;
+        }
+
+        .doc td {
+            color: var(--muted);
+        }
+
+        .doc .x-note {
+            font-size: 12.5px;
+            color: var(--muted);
+            margin-top: 20px;
+            border-top: 1px solid var(--line);
+            padding-top: 14px;
+            max-width: 84ch;
+        }
+
+        /* ---------- 账号和模型：左侧账号列表 + 右侧模型勾选 ---------- */
+        .panes {
+            display: grid;
+            grid-template-columns: 268px minmax(0, 1fr);
+            gap: 16px;
+            align-items: start;
+        }
+
+        .pane {
+            border: 1px solid var(--line);
+            border-radius: var(--r-surf);
+            background: var(--panel);
+        }
+
+        .pane-acct {
+            padding: 8px;
+            position: sticky;
+            top: 0;
+            max-height: min(70vh, 620px);
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+
+        /* 右栏内容贴着圆角走，不裁掉的话头部底色会漏出尖角 */
+        .pane-models {
+            overflow: hidden;
+        }
+
+        .pane-title {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--muted);
+            padding: 4px 8px 8px;
+        }
+
+        .pick-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .pick {
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            width: 100%;
+            text-align: left;
+            border: 0;
+            background: transparent;
+            color: var(--muted);
+            border-radius: var(--r-ctl);
+            padding: 9px 10px 9px 13px;
+            cursor: pointer;
+            font-size: 13.5px;
+            transition: background .16s var(--ease), color .16s var(--ease);
+        }
+
+        .pick:hover {
+            background: var(--panel-2);
+            color: var(--fg);
+        }
+
+        .pick.on {
+            background: var(--panel-2);
+            color: var(--fg);
+        }
+
+        .pick.on::before {
+            content: '';
+            position: absolute;
+            left: 4px;
+            top: 10px;
+            bottom: 10px;
+            width: 3px;
+            border-radius: 2px;
+            background: var(--accent);
+        }
+
+        .pick b {
+            font-weight: 650;
+        }
+
+        .pick.on b {
+            color: var(--accent);
+        }
+
+        .pick small {
+            font-size: 11.5px;
+            line-height: 1.45;
+            color: var(--muted);
+        }
+
+        /* 双栏里的空态占位：账号池为空、或这个账号列不出模型 */
+        .pane-empty {
+            padding: 22px 12px;
+            text-align: center;
+            font-size: 12.5px;
+            color: var(--muted);
+        }
+
+        .models-head {
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .models-title {
+            font-size: 14.5px;
+            font-weight: 650;
+        }
+
+        .models-sub {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 3px;
+            max-width: 58ch;
+        }
+
+        .models-tools {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .models-count {
+            font-size: 12px;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .model-rows {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 2px 10px;
+            padding: 10px 14px 16px;
+        }
+
+        .mrow {
+            display: flex;
+            gap: 9px;
+            align-items: flex-start;
+            padding: 8px 9px;
+            border-radius: var(--r-ctl);
+            cursor: pointer;
+            transition: background .16s var(--ease);
+        }
+
+        .mrow:hover {
+            background: var(--panel-2);
+        }
+
+        .mrow input {
+            width: auto;
+            margin-top: 3px;
+            accent-color: var(--accent);
+            flex: none;
+        }
+
+        .mrow .mname {
+            font-size: 13.5px;
+            font-weight: 600;
+            display: block;
+        }
+
+        .mrow .mid {
+            display: block;
+            font-family: ui-monospace, "SF Mono", Consolas, monospace;
+            font-size: 11px;
+            color: var(--muted);
+            overflow-wrap: anywhere;
+            margin-top: 1px;
+        }
+
+        .mrow.off .mname {
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        .mrow.locked {
+            cursor: default;
+            opacity: .75;
+        }
+
+        .mbadge {
+            display: inline-block;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 1px 7px;
+            font-size: 10.5px;
+            color: var(--muted);
+            background: var(--panel-2);
+            margin-left: 5px;
+            vertical-align: 1px;
+        }
+
+        .mbadge.ok {
+            color: var(--accent);
+            border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+        }
+
+        .models-note {
+            border-top: 1px solid var(--line);
+            padding: 12px 16px 14px;
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .models-note:empty {
+            display: none;
+        }
+
+        .add-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            flex-wrap: wrap;
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+
+            *,
+            *::before,
+            *::after {
+                transition-duration: .001ms !important;
+                animation-duration: .001ms !important;
+                animation-iteration-count: 1 !important;
+            }
+
+            .typing::after {
+                animation: none;
+            }
+        }
+
+        /* ---------- 窄屏：侧栏收成顶部横条，四个入口一排可点 ---------- */
+        @media (max-width: 860px) {
+            body {
+                flex-direction: column;
+            }
+
+            main {
+                padding: 16px 14px 20px;
+            }
+
+            footer {
+                padding: 10px 14px 12px;
+            }
+
+            .page-head {
+                padding-left: 14px;
+                padding-right: 14px;
+            }
+
+            .panes {
+                grid-template-columns: 1fr;
+            }
+
+            .pane-acct {
+                position: static;
+                max-height: none;
+            }
+
+            .sidebar {
+                width: auto;
+                flex-direction: row;
+                align-items: center;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+            }
+
+            .brand {
+                border-bottom: 0;
+                padding: 10px 14px;
+                flex: none;
+            }
+
+            .nav {
+                flex-direction: row;
+                padding: 8px 10px;
+                gap: 4px;
+                overflow-x: auto;
+            }
+
+            .nav a {
+                padding: 0 12px;
+                white-space: nowrap;
+            }
+
+            .nav a.active::before {
+                display: none;
+            }
+
+            .side-foot {
+                display: none;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <aside class="sidebar">
+        <div class="brand">
+            <span class="dot" title="服务在线"></span>
+            <b>qoder-<span>proxy</span></b>
+        </div>
+        <nav class="nav" aria-label="主导航">
+            <a href="#/chat" data-nav="chat">聊天演示</a>
+            <a href="#/accounts" data-nav="accounts">账号和模型</a>
+            <a href="#/docs" data-nav="docs">接入文档</a>
+            <a href="#/deploy" data-nav="deploy">部署文档</a>
+        </nav>
+        <div class="side-foot">本机服务 · <code id="side-origin">127.0.0.1</code></div>
+    </aside>
+
+    <div class="shell">
+        <!-- ========== 页 1：聊天演示 ========== -->
+        <section class="page" id="page-chat">
+            <header class="page-head">
+                <h1>聊天演示</h1>
+                <div class="chips" id="chips"><span class="chip">加载中…</span></div>
+            </header>
+            <main>
+                <div class="col">
+                    <div id="notice"></div>
+
+                    <div id="log"></div>
+                </div>
+            </main>
+            <footer>
+                <div class="pick-row">
+                    <label for="model">模型</label>
+                    <input id="model" list="model-list" placeholder="名字-产品线@账号，例：Qwen3.8-Flash-qoder@a1"
+                        autocomplete="off" spellcheck="false">
+                    <datalist id="model-list"></datalist>
+                    <div class="toggle">
+                        <input type="checkbox" id="stream" checked>
+                        <label for="stream" style="margin: 0">流式</label>
+                    </div>
+                </div>
+                <div class="send">
+                    <button class="ghost" id="clear" title="清空当前会话">清空</button>
+                    <textarea id="prompt" rows="1" placeholder="输入内容，Enter 发送 / Shift+Enter 换行"></textarea>
+                    <button class="primary" id="go">发送</button>
+                    <button class="ghost" id="stop" hidden>停止</button>
+                </div>
+                <p class="hint">请求只发往本机 <code>/v1/chat/completions</code>，不经过任何第三方服务。</p>
+            </footer>
+        </section>
+
+        <!-- ========== 页 2：账号和模型 ========== -->
+        <section class="page" id="page-accounts">
+            <header class="page-head">
+                <h1>账号和模型</h1>
+                <div class="chips" id="acct-chips"></div>
+            </header>
+            <main>
+                <div class="col">
+                    <div class="add-row">
+                        <div>
+                            <label>添加账号</label>
+                            <div class="acct-btns" style="display: flex; gap: 10px; flex-wrap: wrap">
+                                <button class="ghost" id="login-qoder" type="button">添加国际版账号</button>
+                                <button class="ghost" id="login-cn" type="button">添加中国版账号</button>
+                            </div>
+                        </div>
+                        <div class="grow">
+                            <label for="acct-status">登录状态</label>
+                            <input id="acct-status" readonly placeholder="空闲">
+                        </div>
+                    </div>
+
+                    <div class="panes">
+                        <div class="pane pane-acct">
+                            <div class="pane-title">账号池 <span id="acct-count"></span></div>
+                            <div class="pick-list" id="acct-list"></div>
+                        </div>
+                        <div class="pane pane-models">
+                            <div class="models-head">
+                                <div>
+                                    <div class="models-title" id="models-title">选择一个账号</div>
+                                    <div class="models-sub" id="models-sub"></div>
+                                </div>
+                                <div class="models-tools">
+                                    <span class="models-count" id="models-count"></span>
+                                    <button class="ghost small" id="models-all" type="button">全选</button>
+                                    <button class="ghost small" id="models-none" type="button">全不选</button>
+                                    <button class="ghost small" id="acct-remove" type="button">移除该账号</button>
+                                </div>
+                            </div>
+                            <div class="model-rows" id="model-rows"></div>
+                            <div class="models-note" id="models-note"></div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+        </section>
+
+        <!-- ========== 页 3：接入文档 ========== -->
+        <section class="page" id="page-docs">
+            <header class="page-head">
+                <h1>接入文档</h1>
+            </header>
+            <main>
+                <article class="doc">
+                    <h2>外部接入：让任何 OpenAI 客户端用上这些模型</h2>
+                    <p class="lede">本服务就是一个 OpenAI 兼容端点，外部客户端只需要改两处：<b>base_url 指向本机
+                            <code>/v1</code></b>，<b>model 填清单里的 id</b>。没有密钥、没有自定义 header、不需要装 Qoder
+                        客户端。</p>
+
+                    <h3>1. Base URL</h3>
+                    <div class="url-line">
+                        <code id="guide-base"></code>
+                        <button class="ghost small" id="copy-base" type="button">复制</button>
+                    </div>
+                    <p>API key 填任意非空占位（例如 <code>not-needed</code>），账号池的鉴权由服务自己用设备令牌完成。</p>
+
+                    <h3>2. 模型名怎么选</h3>
+                    <p><code>GET /v1/models</code> 返回「账号 × 模型」逐行清单，id 形如 <code>名字-产品线@别名</code>；把后缀抄进客户端的
+                        model 字段就行。</p>
+                    <div class="codebox">
+                        <pre><code>Qwen3.8-Flash-qoder@a1   国际版账号 a1，走 WASM 签名加密端点
+GLM-5.2-qodercn@c1       中国版账号 c1（中国版只有加密端点）
+Qwen3.8-Flash-qodercn    只写产品线：在这条线的启用账号里自动选号
+Qwen3.8-Flash            裸名：按账号顺序找第一个认识它、且不在排队期的
+qfmodel                  Qoder 目录短名，与真实名完全等价</code></pre>
+                    </div>
+                    <p>清单只列服务实际接受的模型。某个账号名下的模型可以在「账号和模型」页按账号取消勾选：取消后这一条从
+                        <code>/v1/models</code> 消失，打到它的请求回 404；同一模型在其它账号仍开着时，裸名会自动落到那些账号。
+                    </p>
+
+                    <h3>3. curl 验一条</h3>
+                    <div class="codebox">
+                        <pre><code>curl <i id="guide-curl-base"></i>/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"Qwen3.8-Flash-qoder@a1","stream":true,
+       "messages":[{"role":"user","content":"你好"}]}'</code></pre>
+                    </div>
+
+                    <h3>4. Python（openai SDK）</h3>
+                    <div class="codebox">
+                        <pre><code>from openai import OpenAI
+
+client = OpenAI(base_url="<i class="gb"></i>/v1", api_key="not-needed")
+resp = client.chat.completions.create(
+    model="Qwen3.8-Flash-qoder@a1",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(resp.choices[0].message.content)</code></pre>
+                    </div>
+
+                    <h3>5. Node / 浏览器 fetch</h3>
+                    <div class="codebox">
+                        <pre><code>const res = await fetch("<i class="gb"></i>/v1/chat/completions", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    model: "Qwen3.8-Flash-qoder@a1",
+    stream: true,
+    messages: [{ role: "user", content: "你好" }],
+  }),
+});
+for await (const frame of readSse(res.body)) {
+  process.stdout.write(frame.choices?.[0]?.delta?.content ?? "");
+}</code></pre>
+                    </div>
+
+                    <h3>6. 任意 OpenAI 兼容客户端</h3>
+                    <p>LobeChat / ChatWise / NextChat / Open WebUI / Jan / Cherry Studio 等：在「模型服务 / 自定义提供方」里新增一个 OpenAI
+                        类型的服务，Base URL 填上面那个、API 密钥填占位串，再运行一次 <code>GET /v1/models</code> 同步模型清单即可。</p>
+                    <p>路径别名：同一套路由也挂在 <code>/v2</code> 下（<code>/v2/chat/completions</code> 与
+                        <code>/v1/chat/completions</code> 完全等价），存量配置不用改。
+                    </p>
+
+                    <div class="x-note">
+                        <p style="margin-top:0">行为要点：<code>stream:true</code> 回标准 SSE，无论上游是否正常收尾都以
+                            <code>data: [DONE]</code> 结束；<code>tools</code> / <code>tool_calls</code>
+                            完整透传；上游排队与额度错误帧的 <code>code</code> 保真转发；403/429/排队帧会给对应账号的那个模型记 30
+                            秒冷却，没写 <code>@别名</code> 的请求自动落到下一个账号。
+                        </p>
+                        <p style="margin-bottom:0">要把这个服务部署到本机之外（局域网 / 公网），去左侧「部署文档」。</p>
+                    </div>
+                </article>
+            </main>
+        </section>
+
+        <!-- ========== 页 4：部署文档 ========== -->
+        <section class="page" id="page-deploy">
+            <header class="page-head">
+                <h1>部署文档</h1>
+            </header>
+            <main>
+                <article class="doc">
+                    <h2>部署与运维</h2>
+                    <p class="lede">从本地起服务、后台常驻、局域网共享到公网反代，一条路走到底。命令行示例默认在项目根目录执行。</p>
+
+                    <h3>1. 环境要求</h3>
+                    <p>Windows 或 Linux 均可，<strong>Node.js ≥ 18</strong>（<code>pnpm run dev</code> 的
+                        <code>--watch</code> 需要 18.11+）。主接口 <code>/v1</code> 不依赖
+                        <code>qodercli</code>，只要完成设备码登录即可；走目录模型（<code>qfmodel</code> 等）或中国版推理所需的 WASM
+                        签名资产已内置在 <code>vendor/qoder-auth-wasm.wasm</code>。
+                    </p>
+                    <div class="codebox">
+                        <pre><code>pnpm install
+pnpm run check      # 本机体检：账号池 / 令牌 / uid / WASM 资产是否就位</code></pre>
+                    </div>
+
+                    <h3>2. 本地启动与登录</h3>
+                    <div class="codebox">
+                        <pre><code>pnpm start          # 前台启动，默认 http://127.0.0.1:8787/
+pnpm run dev        # 开发模式：8788 端口，改代码自动重启
+pnpm run login      # 设备码登录（键盘菜单选产品线），可重复跑、两条产品线混着登
+pnpm run login -- --product qodercn   # 跳过菜单直接登中国版
+pnpm run login -- --no-browser        # 无头 / 远程机器：只打印授权链接
+pnpm run clear      # 清空账号池令牌（要输 clear 确认）</code></pre>
+                    </div>
+                    <p>登录令牌只写在 <code>~/.qoder-proxy/accounts.json</code>
+                        这一处；正在运行的服务按请求实时读池子，<strong>加账号、删账号都不用重启</strong>。服务起来后直接打开 <a href="#/chat"
+                            id="deploy-to-chat">聊天演示</a> 或 <a href="#/accounts" id="deploy-to-accounts">账号和模型</a> 就能用。
+                    </p>
+
+                    <h3>3. 后台常驻（pm2）</h3>
+                    <div class="codebox">
+                        <pre><code>pm2 start pm2.config.js     # 仓库自带配置：NODE_ENV=production，超 1G 自动重启
+pm2 logs qoder-proxy        # 日志在 ./logs/{out,error,combined}.log
+pm2 save; pm2 startup       # 开机自启（按提示执行 startup 输出的那行命令）</code></pre>
+                    </div>
+
+                    <h3>4. 局域网共享</h3>
+                    <p>服务默认只监听 127.0.0.1。想让同一网络里其它设备用上，把 <code>HOST</code> 设成 <code>0.0.0.0</code>
+                        重启，客户端地址里的 <code>127.0.0.1</code> 换成本机局域网 IP：</p>
+                    <div class="codebox">
+                        <pre><code>HOST=0.0.0.0 pnpm start                 # Linux / macOS
+$env:HOST="0.0.0.0"; pnpm start          # Windows PowerShell</code></pre>
+                    </div>
+                    <p>这一页的示例地址会跟着浏览器地址栏自动变：<a href="#/docs" id="deploy-to-docs">接入文档</a> 里的 Base
+                        URL 始终取自你现在访问的这个 origin，不用手改。</p>
+
+                    <h3>5. 公网部署（Nginx 反向代理）</h3>
+                    <p>公网机器上服务仍建议只监听 127.0.0.1，由 Nginx 前置转发。仓库根目录的 <code>vhost.conf</code> 可直接抄进
+                        <code>conf.d/</code>，关键是 <code>proxy_read_timeout</code> 要放宽以扛住长生成：
+                    </p>
+                    <div class="codebox">
+                        <pre><code>server {
+    listen       80;
+    server_name  your-domain.com;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 延长超时时间以适应 AI 生成时长
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 60s;
+    }
+}</code></pre>
+                    </div>
+                    <p><strong>上公网前请自行加访问控制</strong>：本服务不设密钥，任何能访问到这个端口的人都能消耗你账号池的额度。至少在
+                        Nginx 层加 Basic Auth / IP 白名单 / mTLS，或只对内网网段开放。</p>
+
+                    <h3>6. 环境变量速查</h3>
+                    <table>
+                        <tr>
+                            <th>变量</th>
+                            <th>默认值</th>
+                            <th>说明</th>
+                        </tr>
+                        <tr>
+                            <td><code>PORT</code></td>
+                            <td><code>8787</code></td>
+                            <td>监听端口（<code>pnpm run dev</code> 默认 8788）</td>
+                        </tr>
+                        <tr>
+                            <td><code>HOST</code></td>
+                            <td><code>127.0.0.1</code></td>
+                            <td>监听地址；<code>0.0.0.0</code> 对局域网开放</td>
+                        </tr>
+                        <tr>
+                            <td><code>QODER_PROXY_ACCOUNTS_FILE</code></td>
+                            <td><code>~/.qoder-proxy/accounts.json</code></td>
+                            <td>多账号凭据池（Linux/macOS 下 0600）</td>
+                        </tr>
+                        <tr>
+                            <td><code>QODER_PRODUCT</code></td>
+                            <td><code>qoder</code></td>
+                            <td>裸模型名缺省偏好的产品线</td>
+                        </tr>
+                        <tr>
+                            <td><code>QODER_ACCESS_TOKEN</code></td>
+                            <td>无</td>
+                            <td>手工指定令牌，以只读账号 <code>env</code> 加入池（不可续期、不落盘）</td>
+                        </tr>
+                        <tr>
+                            <td><code>QODER_V2_MODELS</code></td>
+                            <td><code>qwen-flash,qwen-plus</code></td>
+                            <td>公开端点可用的通用模型名（仅国际版）</td>
+                        </tr>
+                        <tr>
+                            <td><code>QODER_ENABLE_CLI</code></td>
+                            <td>未设置</td>
+                            <td>设为 <code>1</code> 重新开放已隐藏的 <code>/v0</code> CLI 通道</td>
+                        </tr>
+                    </table>
+
+                    <h3>7. 部署后自检</h3>
+                    <div class="codebox">
+                        <pre><code>curl http://127.0.0.1:8787/health          # 期望 200：主接口与 CLI 通道状态
+curl http://127.0.0.1:8787/v1/models       # 期望「账号 × 模型」清单非空
+pnpm run selftest                          # 离线回归，不联网、不消耗额度
+pnpm run live -- Qwen3.8-Flash-qoder@a1    # 真实登录态打上游（会消耗额度，验收时再跑）</code></pre>
+                    </div>
+
+                    <div class="x-note">
+                        <p style="margin-bottom:0">令牌只存本机文件；容器重建 / 换机器后账号池会空，需要重新 <code>pnpm run
+                                login</code>，或把 <code>~/.qoder-proxy/accounts.json</code> 做成持久化卷挂载进去。</p>
+                    </div>
+                </article>
+            </main>
+        </section>
+    </div>
+
+    <script>
+        (function () {
+            'use strict';
+
+            var STORE = 'qoder-proxy.demo.v1';
+            var $ = function (id) { return document.getElementById(id); };
+            var msgs = [];
+            var busy = false;
+            var abort = null;
+            var streamBox = null;
+
+            // --- 路由：hash 切换四个独立 page -----------------------------------------
+
+            var PAGES = {
+                chat: { title: '聊天演示' },
+                accounts: { title: '账号和模型' },
+                docs: { title: '接入文档' },
+                deploy: { title: '部署文档' },
+            };
+            var currentPage = 'chat';
+
+            function currentHash() {
+                var key = (location.hash || '').replace(/^#\//, '');
+                return PAGES[key] ? key : 'chat';
+            }
+
+            function applyRoute() {
+                var key = currentHash();
+                if (key !== currentPage) {
+                    // 切页时上一条流式如果还挂着，先停掉，避免后台往看不见的气泡里写字
+                    if (busy && abort) abort.abort();
+                    $('notice').innerHTML = '';
+                    $('go').disabled = false;
+                    currentPage = key;
+                }
+                document.querySelectorAll('.page').forEach(function (el) {
+                    el.classList.toggle('active', el.id === 'page-' + key);
+                });
+                document.querySelectorAll('.nav a').forEach(function (el) {
+                    el.classList.toggle('active', el.getAttribute('data-nav') === key);
+                });
+                document.title = 'qoder-proxy · ' + PAGES[key].title;
+                if (key === 'docs') fillGuide();
+                if (key === 'accounts') refreshAccounts();
+            }
+
+            window.addEventListener('hashchange', applyRoute);
+
+            // --- rendering -------------------------------------------------------------
+
+            function esc(text) {
+                return String(text).replace(/[&<>"]/g, function (ch) {
+                    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch];
+                });
+            }
+
+            // Markdown-lite: 围栏代码块 / 行内代码 / 加粗，其余一律当文本。所有内容都先过
+            // esc()，所以模型输出里的尖括号或 onerror 之类的东西不会被解析成标签。
+            var FENCE = /```([\w-]*)\n?([\s\S]*?)(?:```|$)/g;
+            var INLINE_CODE = /`([^`\n]+)`/g;
+            var BOLD = /\*\*([^*\n]+)\*\*/g;
+
+            function rich(source) {
+                var html = '';
+                var rest = String(source);
+                var match;
+                FENCE.lastIndex = 0;
+                while ((match = FENCE.exec(rest))) {
+                    if (match.index === FENCE.lastIndex - match[0].length && match[0].length === 0) break;
+                    html += plain(rest.slice(0, match.index));
+                    var lang = match[1] ? '<span class="code-lang">' + esc(match[1]) + '</span>' : '';
+                    html += '<div class="codebox">' + lang + '<pre><code>' + esc(match[2]) + '</code></pre></div>';
+                    rest = rest.slice(match.index + match[0].length);
+                }
+                return html + plain(rest);
+            }
+
+            // 把任意 pre 归一成带“复制”按钮的代码块：聊天里 rich() 已经包了 .codebox，
+            // 静态文档里的裸 pre 在这里补包；innerHTML 带不了 onclick，所以只能事后注按钮。
+            function decorateCode(scope) {
+                if (!scope) return;
+                scope.querySelectorAll('pre').forEach(function (pre) {
+                    var box = pre.parentElement;
+                    if (!box || !box.classList.contains('codebox')) {
+                        box = document.createElement('div');
+                        box.className = 'codebox';
+                        pre.parentNode.insertBefore(box, pre);
+                        box.appendChild(pre);
+                    }
+                    if (box.querySelector('button')) return;
+                    var code = pre.querySelector('code') || pre;
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.textContent = '复制';
+                    btn.onclick = function () { copyText(code.innerText, btn); };
+                    box.appendChild(btn);
+                });
+            }
+
+            // 换行保持为字符：.body 是 white-space: pre-wrap，再插 <br> 会变成双倍行距。
+            function plain(text) {
+                if (!text) return '';
+                return esc(text).replace(INLINE_CODE, '<code>$1</code>').replace(BOLD, '<b>$1</b>');
+            }
+
+            function bubble(role, text) {
+                var box = document.createElement('div');
+                box.className = 'msg ' + role;
+                var who = document.createElement('div');
+                who.className = 'who';
+                var av = document.createElement('span');
+                av.className = 'av';
+                av.textContent = role === 'user' ? '我' : role === 'err' ? '!' : 'Q';
+                who.appendChild(av);
+                var name = document.createElement('b');
+                name.textContent = role === 'user' ? '我' : role === 'err' ? '出错了' : '模型';
+                who.appendChild(name);
+                if (role === 'assistant') {
+                    var copy = document.createElement('button');
+                    copy.textContent = '复制';
+                    copy.onclick = function () { copyText(body.innerText, copy); };
+                    who.appendChild(copy);
+                }
+                var body = document.createElement('div');
+                body.className = 'body';
+                body.innerHTML = rich(text);
+                decorateCode(body);
+                box.appendChild(who);
+                box.appendChild(body);
+                $('log').appendChild(box);
+                return box;
+            }
+
+            function meta(box, parts) {
+                var line = document.createElement('div');
+                line.className = 'meta';
+                parts.filter(Boolean).forEach(function (p) {
+                    var s = document.createElement('span');
+                    s.textContent = p;
+                    line.appendChild(s);
+                });
+                box.appendChild(line);
+                return line;
+            }
+
+            function copyText(text, btn) {
+                var done = function () {
+                    btn.textContent = '已复制';
+                    setTimeout(function () { btn.textContent = '复制'; }, 1200);
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text); done(); });
+                } else {
+                    legacyCopy(text);
+                    done();
+                }
+            }
+
+            function legacyCopy(text) {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } catch (e) { /* 没有别的办法，忽略 */ }
+                document.body.removeChild(ta);
+            }
+
+            var SUGGESTS = [
+                '用三句话说明这个代理能干什么',
+                '写一个 Node 读取 SSE 流的最小示例',
+                '把这句话改得更通顺：服务只跑在本机，请求不经第三方',
+            ];
+
+            function redraw() {
+                var log = $('log');
+                log.innerHTML = '';
+                if (!msgs.length) {
+                    var hint = document.createElement('div');
+                    hint.className = 'empty';
+                    var big = document.createElement('div');
+                    big.className = 'big';
+                    big.textContent = '还没有对话';
+                    var sub = document.createElement('div');
+                    sub.textContent = '选个模型，或直接点下面的例子开个头。';
+                    hint.appendChild(big);
+                    hint.appendChild(sub);
+                    var row = document.createElement('div');
+                    row.className = 'suggests';
+                    SUGGESTS.forEach(function (t) {
+                        var b = document.createElement('button');
+                        b.type = 'button';
+                        b.textContent = t;
+                        b.onclick = function () {
+                            if (busy) return;
+                            $('prompt').value = t;
+                            autosize();
+                            submit();
+                        };
+                        row.appendChild(b);
+                    });
+                    hint.appendChild(row);
+                    log.appendChild(hint);
+                    return;
+                }
+                msgs.forEach(function (m) { bubble(m.role, m.content); });
+                scrollDown();
+            }
+
+            function scrollDown() {
+                var main = document.querySelector('#page-chat main');
+                if (main) main.scrollTop = main.scrollHeight;
+            }
+
+            function save() {
+                try {
+                    localStorage.setItem(STORE, JSON.stringify({
+                        msgs: msgs,
+                        model: $('model').value,
+                    }));
+                } catch (e) { /* 隐私模式下只剩内存态，够用 */ }
+            }
+
+            function restore() {
+                var raw = null;
+                try { raw = localStorage.getItem(STORE); } catch (e) { return; }
+                if (!raw) return;
+                try {
+                    var data = JSON.parse(raw);
+                    msgs = Array.isArray(data.msgs) ? data.msgs.filter(function (m) { return m && typeof m.content === 'string' && (m.role === 'user' || m.role === 'assistant'); }) : [];
+                    if (data.model) $('model').value = data.model;
+                } catch (e) { /* 坏掉的快照不值得让整页打不开 */ }
+            }
+
+            // --- 账号池与模型目录 -------------------------------------------------------
+
+            function setStatus(text) {
+                $('acct-status').value = text;
+            }
+
+            function fmtExpire(st) {
+                if (!st.expires_at) return '';
+                var d = new Date(st.expires_at);
+                if (isNaN(d)) return '';
+                return st.expired ? '已过期' : d.toLocaleDateString() + ' ' + d.toLocaleTimeString().slice(0, 5) + ' 到期';
+            }
+
+            // --- 账号和模型：左侧选账号、右侧勾选模型 ------------------------------
+            // 取消勾选是服务边界，不只是界面灰显：该模型不再出现在 /v1/models，
+            // 打到它的请求回 404。所以保存完必须连聊天页的清单一起刷新。
+            var pool = [];
+            var picked = null;      // 当前选中的账号别名
+            var roster = null;      // 选中账号的完整目录（含未勾选的行）
+            var rosterSeq = 0;      // 快速连点只认最后一次拉取
+            var saveChain = Promise.resolve();
+
+            function acctLabel(a) {
+                return a && a.product === 'qodercn' ? '中国版' : '国际版';
+            }
+
+            function chipIn(box, text, kind) {
+                var el = document.createElement('span');
+                el.className = 'chip' + (kind ? ' ' + kind : '');
+                el.textContent = text;
+                box.appendChild(el);
+                return el;
+            }
+
+            // 页头只标账号数：模型供多少个在每个账号行与右栏计数里已经写了，这里不重复。
+            function renderPoolChips() {
+                var box = $('acct-chips');
+                box.innerHTML = '';
+                if (!pool.length) return;
+                chipIn(box, pool.length + ' 个账号');
+            }
+
+            function renderPool() {
+                var box = $('acct-list');
+                box.innerHTML = '';
+                $('acct-count').textContent = pool.length ? '· ' + pool.length + ' 个' : '';
+                if (!pool.length) {
+                    var empty = document.createElement('div');
+                    empty.className = 'pane-empty';
+                    empty.textContent = '还没有账号，用上边的按钮加一个。';
+                    box.appendChild(empty);
+                    return;
+                }
+                pool.forEach(function (a) {
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'pick' + (a.alias === picked ? ' on' : '');
+                    var top = document.createElement('b');
+                    top.textContent = a.alias + ' · ' + acctLabel(a);
+                    var sub = document.createElement('small');
+                    var bits = [];
+                    if (a.nickname) bits.push(a.nickname);
+                    bits.push((a.models || []).length + ' 个模型');
+                    if ((a.models_off || []).length) bits.push('已关 ' + a.models_off.length);
+                    if (a.enabled === false) bits.push('已禁用');
+                    if (a.expired) bits.push('令牌已过期');
+                    if (a.readonly) bits.push('只读');
+                    sub.textContent = bits.join(' · ');
+                    btn.appendChild(top);
+                    btn.appendChild(sub);
+                    btn.onclick = function () { selectAccount(a.alias); };
+                    box.appendChild(btn);
+                });
+            }
+
+            function selectAccount(alias) {
+                if (picked === alias) return;
+                picked = alias;
+                renderPool();
+                loadRoster(alias);
+            }
+
+            function refreshAccounts() {
+                return getJSON('/v1/accounts').then(function (res) {
+                    pool = res.data || [];
+                    if (!picked || !pool.some(function (a) { return a.alias === picked; })) {
+                        picked = pool.length ? pool[0].alias : null;
+                    }
+                    renderPool();
+                    renderPoolChips();
+                    return picked ? loadRoster(picked) : renderRoster('账号池是空的');
+                }).catch(function (e) {
+                    setStatus('账号列表拉取失败：' + e.message);
+                });
+            }
+
+            function loadRoster(alias) {
+                var seq = ++rosterSeq;
+                roster = null;
+                renderRoster('正在拉取…');
+                return getJSON('/v1/accounts/' + encodeURIComponent(alias) + '/models').then(function (view) {
+                    if (seq !== rosterSeq) return;
+                    roster = view;
+                    renderRoster('');
+                }).catch(function (e) {
+                    if (seq !== rosterSeq) return;
+                    renderRoster(e.message);
+                });
+            }
+
+            function badge(text, ok) {
+                var s = document.createElement('span');
+                s.className = 'mbadge' + (ok ? ' ok' : '');
+                s.textContent = text;
+                return s;
+            }
+
+            function renderRoster(err) {
+                var box = $('model-rows');
+                box.innerHTML = '';
+                var account = roster && roster.account;
+                var rows = roster ? roster.data : [];
+                var locked = !account || account.readonly === true || account.transient === true;
+                $('models-title').textContent = account
+                    ? account.alias + ' · ' + acctLabel(account) + ' 的模型'
+                    : '模型勾选';
+                var sub = '';
+                if (err) sub = '模型清单拉取失败：' + err;
+                else if (account) {
+                    sub = (account.nickname ? account.nickname + ' · ' : '') + fmtExpire(account);
+                    if ((account.models_queued || []).length) sub += ' · 排队中：' + account.models_queued.join('、');
+                } else sub = '先加账号，或到聊天页上方看服务状态。';
+                $('models-sub').textContent = sub || '设备码授权登录后加入。';
+                updateRosterCount();
+                ['models-all', 'models-none', 'acct-remove'].forEach(function (id) {
+                    $(id).disabled = !account || locked || !rows.length;
+                });
+                if (!rows.length) {
+                    var hint = document.createElement('div');
+                    hint.className = 'pane-empty';
+                    hint.textContent = err ? '这个账号的模型清单拉不到。' : '这个账号没有可列出的模型。';
+                    box.appendChild(hint);
+                    $('models-note').textContent = locked && account ? NOTE_LOCKED : '';
+                    return;
+                }
+                rows.forEach(function (r) {
+                    var lab = document.createElement('label');
+                    lab.className = 'mrow' + (r.enabled ? '' : ' off') + (locked ? ' locked' : '');
+                    var cb = document.createElement('input');
+                    cb.type = 'checkbox';
+                    cb.checked = r.enabled;
+                    cb.disabled = locked;
+                    cb.onchange = function () { toggleModel(r, cb.checked, lab); };
+                    var text = document.createElement('span');
+                    var name = document.createElement('span');
+                    name.className = 'mname';
+                    name.textContent = r.name;
+                    if (r.free) name.appendChild(badge('免费', true));
+                    if (r.transport === 'public') name.appendChild(badge('公开端点'));
+                    else if (r.context_window) name.appendChild(badge(Math.round(r.context_window / 1000) + 'K'));
+                    var id = document.createElement('span');
+                    id.className = 'mid';
+                    id.textContent = r.id;
+                    text.appendChild(name);
+                    text.appendChild(id);
+                    lab.appendChild(cb);
+                    lab.appendChild(text);
+                    box.appendChild(lab);
+                });
+                $('models-note').textContent = locked ? NOTE_LOCKED : NOTE_TOGGLE;
+            }
+
+            var NOTE_TOGGLE = '取消勾选即对该账号关闭：不再出现在 /v1/models，打到它的请求回 404；裸模型名会自动落到仍供它的下一个账号。';
+            var NOTE_LOCKED = '这是 QODER_ACCESS_TOKEN 注入的只读账号，不落盘，也不能改它的模型勾选。';
+
+            function updateRosterCount() {
+                var rows = roster ? roster.data : [];
+                var on = rows.filter(function (r) { return r.enabled; }).length;
+                $('models-count').textContent = rows.length ? '已勾选 ' + on + ' / ' + rows.length : '';
+            }
+
+            function toggleModel(row, checked, label) {
+                row.enabled = checked;
+                label.className = 'mrow' + (checked ? '' : ' off') + (label.className.indexOf('locked') !== -1 ? ' locked' : '');
+                updateRosterCount();
+                saveRoster();
+            }
+
+            function setAllModels(enabled) {
+                if (!roster) return;
+                roster.data.forEach(function (r) { r.enabled = enabled; });
+                renderRoster('');
+                saveRoster();
+            }
+
+            // 每次都发完整的未勾选清单（服务端整组替换），所以连点几个复选框排队
+            // 保存也不会互相吃掉；失败就按服务端现状重画，不让界面留着假的勾选。
+            function saveRoster() {
+                if (!roster || !roster.account) return saveChain;
+                var alias = roster.account.alias;
+                var total = roster.data.length;
+                var off = roster.data.filter(function (r) { return !r.enabled; }).map(function (r) { return r.key; });
+                setStatus('正在保存 ' + alias + ' 的模型勾选…');
+                saveChain = saveChain.then(function () {
+                    return fetch('/v1/accounts/' + encodeURIComponent(alias) + '/models', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ models_disabled: off }),
+                    }).then(function (res) {
+                        if (!res.ok) return res.json().catch(function () { return null; }).then(function (body) {
+                            throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
+                        });
+                        return res.json();
+                    });
+                }).then(function () {
+                    if (picked !== alias) return;
+                    setStatus('已保存：' + alias + ' 现在支持 ' + (total - off.length) + ' 个模型');
+                    return Promise.all([loadCatalog(), refreshAccountsCount()]);
+                }).catch(function (e) {
+                    setStatus('保存失败：' + e.message);
+                    if (picked === alias) return loadRoster(alias);
+                });
+                return saveChain;
+            }
+
+            // 只刷新左侧账号行的计数，不重拉右侧清单（否则会踩掉用户刚点的勾选）。
+            function refreshAccountsCount() {
+                return getJSON('/v1/accounts').then(function (res) {
+                    var keep = picked;
+                    pool = res.data || [];
+                    picked = keep;
+                    renderPool();
+                    renderPoolChips();
+                }).catch(function () { /* 计数不是关键路径 */ });
+            }
+
+            async function removeAccount(alias) {
+                if (!window.confirm('确认移除账号 ' + alias + '？需要重新登录才能恢复。')) return;
+                try {
+                    var res = await fetch('/v1/accounts/' + encodeURIComponent(alias), { method: 'DELETE' });
+                    if (!res.ok) {
+                        var body = await res.json().catch(function () { return null; });
+                        throw new Error((body && body.error && body.error.message) || ('HTTP ' + res.status));
+                    }
+                    setStatus('已移除 ' + alias);
+                    await boot();
+                } catch (e) {
+                    setStatus('移除失败：' + e.message);
+                }
+            }
+
+            var loginTimer = null;
+
+            async function startProductLogin(product) {
+                setStatus('正在发起登录…');
+                var listed;
+                try {
+                    listed = await getJSON('/v1/auth/login?product=' + product);
+                } catch (e) {
+                    setStatus('发起失败：' + e.message);
+                    return;
+                }
+                // 服务端在 localhost 上开浏览器未必开得动，页面自己再开一次；被拦截就给出可点链接。
+                var win = window.open(listed.login_url, '_blank');
+                if (!win) setStatus('授权链接已生成（弹窗被拦截）：' + listed.login_url);
+                else setStatus('等待浏览器授权…（' + (product === 'qodercn' ? '中国版' : '国际版') + '）');
+                watchLogin(product);
+            }
+
+            function watchLogin(product) {
+                if (loginTimer) clearInterval(loginTimer);
+                var elapsed = 0;
+                loginTimer = setInterval(async function () {
+                    elapsed += 2000;
+                    var st;
+                    try { st = await getJSON('/v1/auth/status'); } catch (e) { return; }
+                    // 登录进行中就把账号池刷一次，用户能看到新账号冒出来；勾选项仍旧清单为准，
+                    // 不在这里重拉（避开把用户刚点的勾选冲掉）。
+                    refreshAccountsCount();
+                    var flow = (st.login || []).filter(function (f) { return f.product === product; }).pop();
+                    var added = (st.accounts || []).length;
+                    if (added > 0 && (!flow || flow.state !== 'pending')) {
+                        // 服务在后台轮询到 token 才会多出这个账号；服务端重启过的话看不到流程，也当完成处理。
+                        clearInterval(loginTimer); loginTimer = null;
+                        setStatus('登录成功，账号池现有 ' + added + ' 个账号');
+                        await boot();
+                        return;
+                    }
+                    if (flow && flow.state === 'failed') {
+                        clearInterval(loginTimer); loginTimer = null;
+                        setStatus('登录' + (flow.error === 'cancelled' ? '已取消' : '失败：' + (flow.error || '未知原因')));
+                        return;
+                    }
+                    if (elapsed >= FLOW_TIMEOUT) {
+                        clearInterval(loginTimer); loginTimer = null;
+                        setStatus('授权超时，重新点按钮即可');
+                    }
+                }, 2000);
+            }
+            var FLOW_TIMEOUT = 6 * 60 * 1000; // 比服务端设备码有效期略长，到点停轮询
+
+            function chip(text, kind) {
+                return chipIn($('chips'), text, kind);
+            }
+
+            // 这里确实是 innerHTML 入口，但所有调用方传的都是常量文案或已经 esc() 过的文本。
+            function notice(html) {
+                $('notice').innerHTML = html ? '<div class="banner">' + html + '</div>' : '';
+                $('go').disabled = Boolean(html);
+            }
+
+            function getJSON(url) {
+                return fetch(url, { headers: { Accept: 'application/json' } }).then(function (res) {
+                    if (!res.ok) return res.json().catch(function () { return null; }).then(function (body) {
+                        throw new Error(url + ' -> HTTP ' + res.status + (body && body.error && body.error.message ? ': ' + body.error.message : ''));
+                    });
+                    return res.json();
+                });
+            }
+
+            async function boot() {
+                restore();
+                redraw();
+                await loadCatalog();
+                refreshAccounts();
+            }
+
+            // 只重建聊天页的模型清单与状态牌：勾选变化后也要调它，但不能重跑
+            // restore()/redraw()——那会把会话快照重新拉回来，盖掉正在流式的那一条。
+            async function loadCatalog() {
+                $('chips').innerHTML = '';
+                var listed;
+                try {
+                    listed = await getJSON('/v1/models');
+                } catch (e) {
+                    notice('模型列表拉取失败：' + esc(e.message));
+                    return;
+                }
+                if (!listed || !listed.data || !listed.data.length) {
+                    notice('当前没有可用模型：账号池为空，或者所有模型都已在「<a href="#/accounts" style="color:inherit;text-decoration:underline">账号和模型</a>」里取消勾选。');
+                    return;
+                }
+                var dl = $('model-list');
+                dl.innerHTML = '';
+                var seen = {};
+                var perAccount = {};
+                listed.data.forEach(function (m) {
+                    if (seen[m.id]) return;
+                    seen[m.id] = 1;
+                    var opt = document.createElement('option');
+                    opt.value = m.id;
+                    // 一个模型在一个账号上只一条，所以同名的国际版会出好几条（每个账号一条）：
+                    // label 里必须带上账号别名，否则下拉里看不出它们是不同的账号。
+                    opt.label = (m.display_name || m.model_name || m.id)
+                        + '（' + (m.product === 'qodercn' ? '中国版' : '国际版') + ' · '
+                        + (m.account_alias || '?') + (m.account_nickname ? ' ' + m.account_nickname : '') + '）'
+                        + (m.context_window ? ' · ' + Math.round(m.context_window / 1000) + 'K' : '')
+                        + (m.transport === 'public' ? ' · 公开端点' : '')
+                        + (m.free ? ' · 免费' : '');
+                    dl.appendChild(opt);
+                    if (m.account_alias) perAccount[m.account_alias] = (perAccount[m.account_alias] || 0) + 1;
+                });
+                // 上次选中的模型可能刚被取消勾选：还在新清单里就留着，否则换第一个
+                var still = listed.data.some(function (m) { return m.id === $('model').value; });
+                if (!still) $('model').value = listed.data[0].id;
+                Object.keys(perAccount).forEach(function (alias) {
+                    var item = listed.data.filter(function (m) { return m.account_alias === alias; })[0];
+                    chip(alias + ' · ' + (item ? (item.product === 'qodercn' ? '中国版' : '国际版') : '?') + ' ' + perAccount[alias] + ' 个', 'ok');
+                });
+                chip(listed.data.length + ' 个模型');
+                getJSON('/health').then(function (h) {
+                    chip('服务正常' + (h && h.cli && h.cli !== 'disabled' ? ' · /v0 已启用' : ''), 'ok');
+                }).catch(function () { /* 状态牌不是关键路径 */ });
+            }
+
+            // --- 发送与流式接收 ---------------------------------------------------------
+
+            function buildBody(history) {
+                // 演示页只发最小请求体：模型、历史、流式开关，其余参数一律走上游默认。
+                var messages = [];
+                history.forEach(function (m) { messages.push({ role: m.role, content: m.content }); });
+                return { model: $('model').value.trim(), messages: messages, stream: $('stream').checked };
+            }
+
+            async function submit() {
+                if (busy) return;
+                var text = $('prompt').value.trim();
+                if (!text) { $('prompt').focus(); return; }
+                if (!$('model').value.trim()) { notice('先选一个模型。'); return; }
+                notice('');
+
+                msgs.push({ role: 'user', content: text });
+                var history = msgs.slice();
+                $('prompt').value = '';
+                autosize();
+                redraw();
+                save();
+
+                busy = true;
+                $('go').hidden = true;
+                $('stop').hidden = false;
+                var started = Date.now();
+                var box = bubble('assistant', '');
+                var body = box.querySelector('.body');
+                body.classList.add('typing');
+                streamBox = box;
+                var pending = '';
+
+                abort = new AbortController();
+                try {
+                    var res = await fetch('/v1/chat/completions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(buildBody(history)),
+                        signal: abort.signal,
+                    });
+                    var type = res.headers.get('content-type') || '';
+                    var streaming = type.indexOf('text/event-stream') !== -1;
+                    if (!res.ok && !streaming) {
+                        var err = await res.json().catch(function () { return null; });
+                        throw new Error(errMessage(err, res.status));
+                    }
+                    var usage = null;
+                    if (streaming) {
+                        usage = await readStream(res, box);
+                        pending = box.querySelector('.body').textContent;
+                    } else {
+                        var json = await res.json();
+                        var choice = json.choices && json.choices[0];
+                        pending = (choice && choice.message && choice.message.content) || '';
+                        usage = json.usage || null;
+                    }
+                    body.classList.remove('typing');
+                    body.innerHTML = rich(pending) || '<i>（没有返回内容）</i>';
+                    decorateCode(body);
+                    msgs.push({ role: 'assistant', content: pending });
+                    meta(box, [
+                        $('model').value.trim() + ' · ' + seconds(Date.now() - started),
+                        usage && usage.total_tokens ? 'tokens ' + usage.prompt_tokens + ' 输入 / ' + usage.completion_tokens + ' 输出' : null,
+                    ]);
+                    scrollDown();
+                } catch (e) {
+                    var got = streamBox === box ? body.textContent : '';
+                    body.classList.remove('typing');
+                    if (got) {
+                        // 已经流出来的内容是真实输出，留着：下一轮对话需要它在前面的历史里。
+                        msgs.push({ role: 'assistant', content: got });
+                        body.innerHTML = rich(got);
+                        meta(box, ['已中断 · ' + seconds(Date.now() - started)]);
+                    } else {
+                        box.remove();
+                    }
+                    var shown = e.name === 'AbortError' ? '已手动停止。' : friendly(e);
+                    var errBox = bubble('err', shown);
+                    var again = document.createElement('button');
+                    again.className = 'link';
+                    again.textContent = '重试这一条';
+                    again.onclick = function () {
+                        // history 里已经含这次的用户输入，去掉它——submit() 会重新加一条。
+                        msgs = history.slice(0, -1);
+                        redraw();
+                        $('prompt').value = text;
+                        submit();
+                    };
+                    errBox.appendChild(again);
+                } finally {
+                    busy = false;
+                    streamBox = null;
+                    abort = null;
+                    $('go').hidden = false;
+                    $('stop').hidden = true;
+                    scrollDown();
+                    save();
+                    $('prompt').focus();
+                }
+            }
+
+            function seconds(ms) {
+                return (ms / 1000).toFixed(1) + 's';
+            }
+
+            function friendly(e) {
+                if (e instanceof TypeError) {
+                    return '请求发不出去：浏览器连不上本机服务（' + e.message + '）。确认 pnpm start 还在跑。';
+                }
+                return e.message;
+            }
+
+            function errMessage(payload, status) {
+                if (!payload) return 'HTTP ' + status;
+                var inner = payload.error || payload;
+                var code = inner.code !== undefined ? ' [' + inner.code + ']' : '';
+                var hint = status === 401 && /login/i.test(String(inner.message)) ? '（跑 pnpm run login）' : '';
+                return 'HTTP ' + status + code + '：' + (inner.message || JSON.stringify(inner)) + hint;
+            }
+
+            // OpenAI 帧是 choices[].delta.content；排队/错误帧只有 message(+code)。
+            async function readStream(res, box) {
+                var reader = res.body.getReader();
+                var decoder = new TextDecoder();
+                var target = box.querySelector('.body');
+                var buffer = '';
+                var usage = null;
+                var failure = null;
+                while (true) {
+                    var chunk = await reader.read();
+                    if (chunk.done) break;
+                    buffer += decoder.decode(chunk.value, { stream: true });
+                    var lines = buffer.split('\n');
+                    buffer = lines.pop();
+                    for (var i = 0; i < lines.length; i++) {
+                        var line = lines[i].trim();
+                        if (line.indexOf('data:') !== 0) continue;
+                        var payload = line.slice(5).trim();
+                        if (!payload || payload === '[DONE]') continue;
+                        var json;
+                        try { json = JSON.parse(payload); } catch (e) { continue; }
+                        if (json.usage) usage = json.usage;
+                        if (json.error) { failure = errMessage(json, 200); break; }
+                        if (!json.choices && json.message) { failure = json.message + (json.code ? ' [code ' + json.code + ']' : ''); break; }
+                        var delta = json.choices && json.choices[0] && json.choices[0].delta;
+                        if (delta && delta.content) {
+                            target.textContent += delta.content;
+                            scrollDown();
+                        }
+                    }
+                    if (failure) break;
+                }
+                if (failure) throw new Error(failure);
+                return usage;
+            }
+
+            function autosize() {
+                var ta = $('prompt');
+                ta.style.height = 'auto';
+                ta.style.height = Math.min(ta.scrollHeight, 200) + 'px';
+            }
+
+            // --- 接入文档页：把示例里的地址填成当前 origin -------------------------------
+
+            var guideFilled = false;
+            function fillGuide() {
+                var origin = location.origin;   // 例：http://127.0.0.1:8787
+                $('side-origin').textContent = origin.replace(/^https?:\/\//, '');
+                $('guide-base').textContent = origin + '/v1';
+                var cb = $('guide-curl-base');
+                if (cb) cb.textContent = origin + '/v1';
+                document.querySelectorAll('#page-docs .gb').forEach(function (el) { el.textContent = origin; });
+                decorateCode($('page-docs'));
+                guideFilled = true;
+            }
+
+            $('go').onclick = submit;
+            $('login-qoder').onclick = function () { startProductLogin('qoder'); };
+            $('login-cn').onclick = function () { startProductLogin('qodercn'); };
+            $('stop').onclick = function () { if (abort) abort.abort(); };
+            $('clear').onclick = function () { msgs = []; redraw(); save(); };
+            $('copy-base').onclick = function () { copyText($('guide-base').textContent, $('copy-base')); };
+            $('models-all').onclick = function () { setAllModels(true); };
+            $('models-none').onclick = function () { setAllModels(false); };
+            $('acct-remove').onclick = function () { if (picked) removeAccount(picked); };
+            $('model').addEventListener('change', save);
+            $('prompt').addEventListener('input', autosize);
+            $('prompt').addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+                    e.preventDefault();
+                    submit();
+                }
+            });
+            window.addEventListener('error', function (e) {
+                notice('页面脚本报错：' + esc(e.message));
+            });
+
+            // 账号池空横幅里的「账号和模型」链接：点完把用户从聊天页带过去
+            $('notice').addEventListener('click', function (e) {
+                if (e.target.closest('a[href="#/accounts"]')) location.hash = '#/accounts';
+            });
+
+            applyRoute();
+            boot();
+        })();
+    </script>
+</body>
+
+</html>

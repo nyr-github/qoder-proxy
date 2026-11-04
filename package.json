@@ -1,11 +1,16 @@
 {
   "name": "qoder-proxy",
   "version": "1.0.0",
-  "description": "OpenAI-compatible HTTP proxy for Qoder CLI",
+  "description": "OpenAI-compatible proxy for Qoder and Qoder CN: multi-account pool over the direct HTTP endpoints",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "check": "node scripts/check.js"
+    "dev": "node --watch scripts/dev.js",
+    "login": "node src/login.js",
+    "clear": "node src/clear.js",
+    "check": "node scripts/check.js",
+    "selftest": "node scripts/selftest.js",
+    "live": "node scripts/live.js"
   },
   "dependencies": {
     "express": "^4.21.0"
