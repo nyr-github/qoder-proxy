@@ -194,7 +194,7 @@ async function openChatCompletion(target, body) {
     const ask = buildAsk(body, product, model);
     let { response, token } = await postOnce(account, product, ask);
 
-    if ((response.status === 401 || response.status === 403) ) {
+    if ((response.status === 401 || response.status === 403)) {
         try { await response.body?.cancel(); } catch { }
         try { token = await accounts.accessToken(account, { forceRefresh: true }); } catch (e) {
             throw Object.assign(new Error(`${e.message} (account ${account.alias})`), { status: 401 });
